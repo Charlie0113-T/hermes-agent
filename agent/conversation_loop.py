@@ -536,10 +536,11 @@ def _billing_or_entitlement_message(
     model_label = (model or "").strip() or "the selected model"
 
     # Anthropic Pro/Max OAuth surfaces "extra usage" exhaustion as a hard 400 — "add credits"
-    # does not apply. A Console API key on the same provider is credit-billed, so it takes the
-    # generic path and its Console link. ``unverified`` (#82154): the same 400 is returned for a
-    # server-side content-filter rejection, so hedge and name the other cause.
-    if oauth and (provider or "").strip().lower() == "anthropic":
+    # does not apply. ``oauth`` is the native OAuth wire under any slug (a custom provider pointed at
+    # api.anthropic.com bills the same subscription); a Console API key, or a token relayed through a
+    # third-party base_url, is billed elsewhere and takes the generic path. ``unverified`` (#82154):
+    # the same 400 is returned for a server-side content-filter rejection, so hedge and name the other cause.
+    if oauth:
         switch = (
             "You can also switch to an Anthropic API key or another provider with "
             "/model <model> --provider <provider>."
