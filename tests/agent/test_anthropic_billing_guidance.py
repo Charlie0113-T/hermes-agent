@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import pytest
 
+from agent.anthropic_adapter import _auth_style
+from agent.anthropic_credentials import anthropic_route_is_oauth
 from agent.billing_links import build_billing_block
 from agent.conversation_loop import _billing_or_entitlement_message
 from agent.error_classifier import classify_api_error
@@ -144,20 +146,19 @@ class _Agent:
         return lambda *args, **kwargs: None
 
 
-def _nonretryable(agent, error, classified):
+def _nonretryable(agent, error, classified, *, provider="anthropic", base_url="https://api.anthropic.com"):
     return nonretryable_client_error_result(
         agent, error, classified, status_code=400, api_kwargs=None, api_messages=[], messages=[],
-        conversation_history=None, api_call_count=1, approx_tokens=10, provider="anthropic",
-        base_url="https://api.anthropic.com", model="claude-sonnet-5-5",
+        conversation_history=None, api_call_count=1, approx_tokens=10, provider=provider,
+        base_url=base_url, model="claude-sonnet-5-5",
     )
 
 
-def _max_retries(agent, error, classified):
+def _max_retries(agent, error, classified, *, provider="anthropic", base_url="https://api.anthropic.com"):
     return max_retries_exhausted_result(
         agent, error, classified, attempts=3, is_rate_limited=False, error_msg=str(error).lower(),
         api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=3,
-        approx_tokens=10, provider="anthropic", base_url="https://api.anthropic.com",
-        model="claude-sonnet-5-5",
+        approx_tokens=10, provider=provider, base_url=base_url, model="claude-sonnet-5-5",
     )
 
 
@@ -190,3 +191,41 @@ def test_subscription_billing_wall_link_matches_its_guidance(terminal):
     assert "Claude subscription" in "\n".join(agent.printed)
     assert "Claude subscription" in result["final_response"]
     assert "claude.ai" in result["billing_block"]["billing_url"]
+
+
+# ── The guidance follows the wire, not the provider slug ─────────────────────
+# ``_is_anthropic_oauth`` (``anthropic_route_is_oauth``, the Claude Code identity predicate) qualifies
+# an OAuth-shaped token on the ``anthropic`` slug even behind a third-party base_url, but
+# ``_auth_style`` checks the URL first and sends that token as plain Bearer (MiniMax) or x-api-key
+# (other proxies), so no subscription is billed. A custom slug pointed at api.anthropic.com, by
+# contrast, does go out on the OAuth wire. Each route builds the agent the way agent_init does and
+# checks every billing surface against the wire style the client actually uses.
+
+_OAUTH_TOKEN = "sk-ant-oat01-" + "x" * 24
+_API_KEY = "sk-ant-api03-" + "x" * 24
+
+_ROUTES = pytest.mark.parametrize("provider,base_url,credential", [
+    pytest.param("anthropic", "", _OAUTH_TOKEN, id="native-default-host"),
+    pytest.param("anthropic", None, _OAUTH_TOKEN, id="native-base-url-none"),
+    pytest.param("work-claude", "https://api.anthropic.com", _OAUTH_TOKEN, id="custom-slug-native-host"),
+    pytest.param("anthropic", "https://api.minimax.io/anthropic", _OAUTH_TOKEN, id="anthropic-slug-minimax"),
+    pytest.param("anthropic", "https://llm-proxy.example.internal/anthropic", _OAUTH_TOKEN, id="anthropic-slug-proxy"),
+    pytest.param("anthropic", "https://api.anthropic.com", _API_KEY, id="native-host-api-key"),
+])
+
+
+@_TERMINAL_PATHS
+@_ROUTES
+def test_subscription_guidance_iff_native_oauth_wire(terminal, provider, base_url, credential):
+    """Subscription guidance and the claude.ai link appear exactly when the request went out on the
+    native OAuth wire, the one route Anthropic bills to a Pro/Max subscription."""
+    agent = _Agent(oauth=anthropic_route_is_oauth(base_url, credential, provider=provider))
+    on_subscription = _auth_style(credential, base_url, base_url) == "oauth"
+    error = _BillingWall(_CREDIT_BALANCE_400)
+    result = terminal(
+        agent, error, classify_api_error(error, provider=provider), provider=provider, base_url=base_url,
+    )
+
+    for surface in ("\n".join(agent.printed), result["final_response"]):
+        assert ("Claude subscription" in surface) is on_subscription
+    assert ("claude.ai" in (result["billing_block"]["billing_url"] or "")) is on_subscription
