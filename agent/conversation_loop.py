@@ -525,9 +525,17 @@ def _is_nous_inference_route(provider: str, base_url: str) -> bool:
     )
 
 
+# Anthropic answers a Console API key sent as an OAuth token with its Console credit error even
+# when the key has credit: the Claude Code lane does not draw on it (#133856), so a top-up can't help.
+_ANTHROPIC_OAUTH_MISREAD_HINT = (
+    "This key was sent as an OAuth token. If it is a Console API key, Hermes misread it and adding "
+    "credit will not fix this: https://github.com/NousResearch/hermes-agent/issues/133856"
+)
+
+
 def _billing_or_entitlement_message(
     *, capability: str, provider: str, base_url: str, model: str, unverified: bool = False,
-    oauth: bool = False,
+    oauth: bool = False, console_credit_wall: bool = False,
 ) -> str:
     if _is_nous_inference_route(provider, base_url):
         return _nous_entitlement_message(capability)
@@ -540,6 +548,9 @@ def _billing_or_entitlement_message(
     # api.anthropic.com bills the same subscription); a Console API key, or a token relayed through a
     # third-party base_url, is billed elsewhere and takes the generic path. ``unverified`` (#82154):
     # the same 400 is returned for a server-side content-filter rejection, so hedge and name the other cause.
+    # ``console_credit_wall`` (#133856): the body is the Console credit error, which a Console key
+    # misread as OAuth gets, so say the key went out as OAuth before anyone tops up a balance that was
+    # never the problem. The line is conditional: a genuine OAuth login can get the same body.
     if oauth:
         switch = (
             "You can also switch to an Anthropic API key or another provider with "
@@ -564,6 +575,7 @@ def _billing_or_entitlement_message(
         return "\n".join([
             f"{provider_label} reported that your Claude subscription usage is exhausted for "
             f"{model_label} (included quota + extra-usage credits).",
+            *([_ANTHROPIC_OAUTH_MISREAD_HINT] if console_credit_wall else []),
             "Options: wait for the billing cycle to reset, or add extra usage at https://claude.ai/settings/usage",
             switch,
         ])
@@ -622,6 +634,7 @@ def _billing_failure_result(
         guidance = _billing_or_entitlement_message(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=unverified, oauth=oauth,
+            console_credit_wall=bool(getattr(classified, "console_credit_wall", False)),
         )
     final = _billing_terminal_label(summary, unverified) + (f"\n\n{guidance}" if guidance else "")
     return {
@@ -637,11 +650,11 @@ def _billing_failure_result(
 
 def _print_billing_or_entitlement_guidance(
     agent, *, capability: str, provider: str, base_url: str, model: str, unverified: bool = False,
-    oauth: bool = False,
+    oauth: bool = False, console_credit_wall: bool = False,
 ) -> bool:
     return _print_guidance(agent, _billing_or_entitlement_message(
         capability=capability, provider=provider, base_url=base_url, model=model,
-        unverified=unverified, oauth=oauth,
+        unverified=unverified, oauth=oauth, console_credit_wall=console_credit_wall,
     ))
 
 

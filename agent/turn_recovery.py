@@ -901,6 +901,7 @@ def _print_nonretryable_auth_guidance(
     if classified.reason == FailoverReason.billing and _print_billing_or_entitlement_guidance(
         agent, capability="model access", provider=provider, base_url=str(base_url),
         model=model, unverified=classified.billing_unverified, oauth=_bills_claude_subscription(agent, base_url),
+        console_credit_wall=classified.console_credit_wall,
     ):
         return
     if provider == "nous" and _print_nous_entitlement_guidance(agent, "Nous model access"):
@@ -1205,6 +1206,7 @@ def max_retries_exhausted_result(
         _billing_kw = dict(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=classified.billing_unverified, oauth=_bills_claude_subscription(agent, base_url),
+            console_credit_wall=classified.console_credit_wall,
         )
         _billing_guidance = _billing_or_entitlement_message(**_billing_kw)
         _print_billing_or_entitlement_guidance(agent, **_billing_kw)

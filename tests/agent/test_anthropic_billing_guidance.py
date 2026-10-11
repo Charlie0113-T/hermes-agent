@@ -200,9 +200,17 @@ def test_subscription_billing_wall_link_matches_its_guidance(terminal):
 # (other proxies), so no subscription is billed. A custom slug pointed at api.anthropic.com, by
 # contrast, does go out on the OAuth wire. Each route builds the agent the way agent_init does and
 # checks every billing surface against the wire style the client actually uses.
+#
+# The sk-ant-usr row is #133856's route. While the classifier reads that Console key as OAuth it
+# goes out on the OAuth wire, and Anthropic answers with its Console credit error: the guidance
+# must say the key was sent as OAuth. Once the key is read as an API key it takes the Console
+# path, and the same assertions hold, so the matrix does not depend on which classifier fix lands.
 
 _OAUTH_TOKEN = "sk-ant-oat01-" + "x" * 24
 _API_KEY = "sk-ant-api03-" + "x" * 24
+_USR_KEY = "sk-ant-usr-" + "x" * 24
+_EXTRA_USAGE_400 = "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+_MISREAD_HINT = "This key was sent as an OAuth token"
 
 _ROUTES = pytest.mark.parametrize("provider,base_url,credential", [
     pytest.param("anthropic", "", _OAUTH_TOKEN, id="native-default-host"),
@@ -211,6 +219,7 @@ _ROUTES = pytest.mark.parametrize("provider,base_url,credential", [
     pytest.param("anthropic", "https://api.minimax.io/anthropic", _OAUTH_TOKEN, id="anthropic-slug-minimax"),
     pytest.param("anthropic", "https://llm-proxy.example.internal/anthropic", _OAUTH_TOKEN, id="anthropic-slug-proxy"),
     pytest.param("anthropic", "https://api.anthropic.com", _API_KEY, id="native-host-api-key"),
+    pytest.param("anthropic", "https://api.anthropic.com", _USR_KEY, id="native-host-usr-key"),
 ])
 
 
@@ -218,7 +227,8 @@ _ROUTES = pytest.mark.parametrize("provider,base_url,credential", [
 @_ROUTES
 def test_subscription_guidance_iff_native_oauth_wire(terminal, provider, base_url, credential):
     """Subscription guidance and the claude.ai link appear exactly when the request went out on the
-    native OAuth wire, the one route Anthropic bills to a Pro/Max subscription."""
+    native OAuth wire, the one route Anthropic bills to a Pro/Max subscription. The body here is the
+    Console credit error, so on that wire the guidance also says the key was sent as OAuth."""
     agent = _Agent(oauth=anthropic_route_is_oauth(base_url, credential, provider=provider))
     on_subscription = _auth_style(credential, base_url, base_url) == "oauth"
     error = _BillingWall(_CREDIT_BALANCE_400)
@@ -228,4 +238,28 @@ def test_subscription_guidance_iff_native_oauth_wire(terminal, provider, base_ur
 
     for surface in ("\n".join(agent.printed), result["final_response"]):
         assert ("Claude subscription" in surface) is on_subscription
+        assert (_MISREAD_HINT in surface) is on_subscription
     assert ("claude.ai" in (result["billing_block"]["billing_url"] or "")) is on_subscription
+
+
+def test_console_credit_wording_is_flagged_apart_from_the_subscription_wall():
+    """The classifier tells Anthropic's two billing bodies apart: the Console credit error is a
+    confirmed verdict flagged ``console_credit_wall``; "out of extra usage" stays unverified (#82154)."""
+    credit = classify_api_error(_BillingWall(_CREDIT_BALANCE_400), provider="anthropic")
+    extra_usage = classify_api_error(_BillingWall(_EXTRA_USAGE_400), provider="anthropic")
+
+    assert (credit.console_credit_wall, credit.billing_unverified) == (True, False)
+    assert (extra_usage.console_credit_wall, extra_usage.billing_unverified) == (False, True)
+
+
+@_TERMINAL_PATHS
+def test_subscription_wall_gets_no_misread_hint(terminal):
+    """A real subscription wall ("out of extra usage") on the native OAuth wire keeps the subscription
+    guidance without the misread line, which is only for the Console credit error."""
+    agent = _Agent(oauth=True)
+    error = _BillingWall(_EXTRA_USAGE_400)
+    result = terminal(agent, error, classify_api_error(error, provider="anthropic"))
+
+    for surface in ("\n".join(agent.printed), result["final_response"]):
+        assert "Claude subscription" in surface
+        assert _MISREAD_HINT not in surface
